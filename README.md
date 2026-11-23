@@ -1,40 +1,99 @@
-# fast
+# Carbon Labs
 
-Fast provides a private Chromium browser session for each account. Browser profiles
-are stored in per-user Docker volumes, so stopping a session removes its container
-without deleting its saved profile.
+> Self-hosted private Chromium desktop workspaces with persistent per-user volume storage and in-browser embedding.
 
-## Run the complete application
+Carbon Labs allows users to create their own dedicated, web-accessible [linuxserver/chromium](https://docs.linuxserver.io/images/docker-chromium/) container directly from their dashboard.
 
-1. Copy `.env.example` to `.env` and set `SESSION_SECRET` to a long random value.
-2. Start the stack with `docker compose up --build -d`.
-3. Open `http://localhost:8080` (or the port selected with `FRONTEND_PORT`).
+---
 
-The frontend publishes `FRONTEND_PORT` (default `8080`) as the only public
-Compose port. The API runs on the host network but binds only to the Docker
-bridge gateway address (default `172.17.0.1:3001`), where the frontend can reach
-it through the Docker host gateway; the API port is not published. MongoDB
-remains on a private bridge network and is not published to a host port. The
-backend talks directly to the host Docker Engine through the mounted
-`/var/run/docker.sock`; there is no DinD service. Chromium containers are
-created by the host Docker Engine, and their browser ports bind only to
-`127.0.0.1` before being accessed through the authenticated API proxy.
+## Features
 
-The Docker socket grants the backend root-equivalent control of the host Docker
-Engine. Protect the Docker host and Compose configuration accordingly. Set
-`DOCKER_GID` to the group ID that owns the host socket (check with
-`stat -c '%g' /var/run/docker.sock`). Set `DOCKER_HOST_GATEWAY` if your Docker
-host uses a different bridge gateway address. The private MongoDB subnet
-`172.30.254.0/24` must not conflict with existing host networks. Place the
-frontend behind HTTPS in a public deployment, forwarding the original
-`X-Forwarded-Proto` value from the TLS terminator.
+- **Direct Docker Management via Node.js (`dockerode`)**: Containers are created, inspected, started, stopped, and removed via the Docker socket (`/var/run/docker.sock`) without shell commands.
+- **Per-User Bind Volumes**: Each user's browser profile, bookmarks, and downloads are stored in a dedicated bind mount folder organized by their user UUID (`volumes/<userUUID>`).
+- **Auto-Join on Ready**: Starting or creating a container polls its internal web port and automatically opens the full-screen browser once it is responsive.
+- **Full-Screen Browser View**:
+  - Embedded desktop with high-performance audio/canvas streaming (via KasmVNC/WebSocket).
+  - Clean top control bar to refresh the browser view or exit back to the dashboard.
+- **Session Lifecycle Controls**:
+  - **Start / Join**: Boots the container and attaches to the session.
+  - **Stop**: Stops the running container while safely preserving all user files and profile data in `volumes/<userUUID>`.
+  - **Remove**: Stops and deletes the container, and permanently removes the user's `volumes/<userUUID>` folder.
+- **Authenticated Reverse Proxy**: Express proxies HTTP and WebSocket connections to the user's specific container port on `127.0.0.1` after verifying session credentials.
 
-## Local development
+---
 
-`npm run dev` starts the Vite frontend and Express API. The API expects a running
-MongoDB instance at `MONGO_URI` and a Docker Engine accessible through
-`DOCKER_HOST` (by default, `/var/run/docker.sock`). Vite proxies `/api` and the
-authenticated `/session` browser route to the API.
+## Prerequisites
 
-`npm run build` builds the frontend assets. The Compose deployment builds the
-frontend and API as separate containers.
+- **Node.js** (v20+ or v22+)
+- **MongoDB** running locally (or via Docker)
+- **Docker Engine** running and accessible via `/var/run/docker.sock`
+
+---
+
+## Quick Start
+
+### 1. Start MongoDB
+
+If you don't have MongoDB installed natively, start it via Docker:
+
+```bash
+docker run -d --name mongo -p 27017:27017 -v mongo_data:/data/db mongo:7
+```
+
+### 2. Configure Environment
+
+Copy `.env.example` to `.env`:
+
+```bash
+cp .env.example .env
+```
+
+Ensure `SESSION_SECRET` is set (e.g. `openssl rand -hex 32`).
+
+### 3. Install Dependencies
+
+```bash
+npm install
+```
+
+### 4. Start the Application
+
+```bash
+npm run dev
+```
+
+- Open `http://localhost:5173` in your browser.
+- Create an account on `/signup` or log in on `/`.
+- On your dashboard, click **Create & start browser**!
+
+---
+
+## How it Works
+
+```text
+[ Browser ] ──▶ [ Vite :5173 / Express :3001 ]
+                        │
+                        ├── Auth & Session Store (MongoDB)
+                        │
+                        ├── Dockerode (/var/run/docker.sock)
+                        │     └── Spawns 'chromium-<userUUID>'
+                        │         - Port 3000 -> 127.0.0.1:<randomPort>
+                        │         - Bind: volumes/<userUUID> -> /config
+                        │
+                        └── http-proxy (HTTP + WebSockets)
+                              └── Streams KasmVNC into full-screen iframe
+```
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `PORT` | `3001` | Express API port |
+| `MONGO_URI` | `mongodb://127.0.0.1:27017/carbon-labs` | MongoDB connection string |
+| `SESSION_SECRET` | *(Required)* | Secret key for session signing |
+| `CHROMIUM_IMAGE` | `lscr.io/linuxserver/chromium:latest` | LinuxServer Chromium Docker image |
+| `VOLUMES_DIR` | `<projectRoot>/volumes` | Base directory on host for per-user UUID bind volumes |
+| `DOCKER_SOCKET_PATH` | `/var/run/docker.sock` | Path to Docker UNIX domain socket |
+| `DOCKER_PROXY_HOST` | `127.0.0.1` | Host address for container port binding |

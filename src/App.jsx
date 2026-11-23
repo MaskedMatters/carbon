@@ -8,9 +8,15 @@ async function requestApi(url, options = {}) {
       ...options.headers,
     },
   });
-  const result = response.status === 204 ? {} : await response.json();
+  const text = await response.text();
+  let result = {};
+  try {
+    result = text ? JSON.parse(text) : {};
+  } catch {
+    // Non-JSON response
+  }
   if (!response.ok) {
-    throw new Error(result.error || "Something went wrong. Please try again.");
+    throw new Error(result.error || `Request failed with status ${response.status}`);
   }
   return result;
 }
@@ -80,10 +86,16 @@ function AuthCard({ mode, onAuthenticated, onNavigate, message, setMessage }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password, confirmPassword }),
       });
-      const result = await response.json();
+      const text = await response.text();
+      let result = {};
+      try {
+        result = text ? JSON.parse(text) : {};
+      } catch {
+        // Response was not JSON
+      }
 
       if (!response.ok) {
-        throw new Error(result.error || "Unable to authenticate. Please try again.");
+        throw new Error(result.error || "Unable to authenticate. Please check the backend server.");
       }
 
       onAuthenticated(result.user);
@@ -199,98 +211,87 @@ function AuthCard({ mode, onAuthenticated, onNavigate, message, setMessage }) {
 }
 
 function Dashboard({ user }) {
-  const [snapshot, setSnapshot] = useState(null);
+  const [container, setContainer] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [busyAction, setBusyAction] = useState("");
   const [isViewing, setIsViewing] = useState(false);
-  const [frameVersion, setFrameVersion] = useState(0);
+  const [frameKey, setFrameKey] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
 
-  useEffect(() => {
-    let active = true;
-    const loadWorkspace = async () => {
-      try {
-        const result = await requestApi("/api/workspace");
-        if (active) {
-          setSnapshot(result);
-          setErrorMessage("");
-        }
-      } catch (error) {
-        if (active) {
-          setErrorMessage(error.message || "Unable to load your workspace.");
-        }
-      } finally {
-        if (active) setIsLoading(false);
-      }
-    };
+  const loadContainer = async () => {
+    try {
+      const data = await requestApi("/api/container");
+      setContainer(data.container);
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error.message || "Unable to check container status.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-    loadWorkspace();
-    const intervalId = window.setInterval(loadWorkspace, 15_000);
-    return () => {
-      active = false;
-      window.clearInterval(intervalId);
-    };
+  useEffect(() => {
+    loadContainer();
+    const interval = setInterval(loadContainer, 10000);
+    return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    if (!isViewing) return undefined;
-
-    const sendPresence = (active) => {
-      requestApi("/api/workspace/presence", {
-        method: "POST",
-        body: JSON.stringify({ active }),
-      }).catch((error) => {
-        setErrorMessage(error.message || "Unable to update your session status.");
-      });
-    };
-    const syncVisibility = () => {
-      sendPresence(document.visibilityState === "visible");
-    };
-
-    syncVisibility();
-    const intervalId = window.setInterval(syncVisibility, 20_000);
-    document.addEventListener("visibilitychange", syncVisibility);
-    return () => {
-      window.clearInterval(intervalId);
-      document.removeEventListener("visibilitychange", syncVisibility);
-    };
-  }, [isViewing]);
-
-  async function leaveBrowser() {
-    setIsViewing(false);
-    try {
-      await requestApi("/api/workspace/presence", {
-        method: "POST",
-        body: JSON.stringify({ active: false }),
-      });
-    } catch (error) {
-      setErrorMessage(error.message || "Unable to update your session status.");
-    }
-  }
-
-  async function runWorkspaceAction(action, { enter = false } = {}) {
-    setBusyAction(action);
+  async function handleStart(autoJoin = true) {
+    setBusyAction("start");
     setErrorMessage("");
     try {
-      const result = await requestApi(`/api/workspace/${action}`, {
-        method: "POST",
-      });
-      setSnapshot((current) => ({
-        ...current,
-        workspace: result.workspace,
-      }));
-      if (enter) setIsViewing(true);
-      if (action === "stop" || action === "reset") setIsViewing(false);
+      const data = await requestApi("/api/container/start", { method: "POST" });
+      setContainer(data.container);
+      if (autoJoin && data.container?.ready) {
+        setIsViewing(true);
+      }
     } catch (error) {
-      setErrorMessage(error.message || "Unable to update your workspace.");
+      setErrorMessage(error.message || "Failed to start container.");
     } finally {
       setBusyAction("");
     }
   }
 
-  const workspace = snapshot?.workspace;
-  const isRunning = workspace?.status === "running";
-  const isStarting = workspace?.status === "starting";
+  async function handleStop() {
+    setBusyAction("stop");
+    setErrorMessage("");
+    try {
+      const data = await requestApi("/api/container/stop", { method: "POST" });
+      setContainer(data.container);
+      setIsViewing(false);
+    } catch (error) {
+      setErrorMessage(error.message || "Failed to stop container.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function handleRemove() {
+    if (
+      !window.confirm(
+        "Are you sure you want to remove your container? This will stop it and permanently delete all your saved browser profile data and files.",
+      )
+    ) {
+      return;
+    }
+    setBusyAction("remove");
+    setErrorMessage("");
+    try {
+      const data = await requestApi("/api/container/remove", { method: "POST" });
+      setContainer(data.container);
+      setIsViewing(false);
+    } catch (error) {
+      setErrorMessage(error.message || "Failed to remove container.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  const status = container?.status ?? "not_created";
+  const isRunning = status === "running";
+  const isStarting = status === "starting" || busyAction === "start";
+  const isStopped = status === "stopped";
+  const hasSavedData = Boolean(container?.hasSavedData);
 
   return (
     <section className="dashboard-main" aria-labelledby="dashboard-heading">
@@ -306,17 +307,8 @@ function Dashboard({ user }) {
               <span className="title-period">.</span>
             </h1>
             <p className="dashboard-subtitle">
-              Your own browser, ready whenever you are.
+              Your own private Chromium desktop, ready whenever you are.
             </p>
-          </div>
-          <div className="active-users" aria-live="polite">
-            <span className="active-users-icon" aria-hidden="true">
-              <span />
-            </span>
-            <div>
-              <strong>{snapshot?.activeUsers ?? "—"}</strong>
-              <span>using their browser now</span>
-            </div>
           </div>
         </div>
 
@@ -331,15 +323,14 @@ function Dashboard({ user }) {
             <div className="session-toolbar">
               <div className="session-connection">
                 <span className="connection-indicator" />
-                <span>Private browser</span>
+                <span>Chromium Desktop — Online</span>
               </div>
               <div className="session-actions">
                 <button
                   className="session-toolbar-button"
                   type="button"
-                  onClick={() => setFrameVersion((version) => version + 1)}
-                  aria-label="Refresh browser"
-                  title="Refresh browser"
+                  onClick={() => setFrameKey((k) => k + 1)}
+                  title="Refresh browser view"
                 >
                   <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
                     <path
@@ -355,17 +346,18 @@ function Dashboard({ user }) {
                 <button
                   className="session-toolbar-button"
                   type="button"
-                  onClick={leaveBrowser}
+                  onClick={() => setIsViewing(false)}
+                  title="Exit full-screen view"
                 >
-                  Exit browser
+                  Exit View
                 </button>
               </div>
             </div>
             <iframe
-              key={frameVersion}
+              key={frameKey}
               className="browser-frame"
               src="/session/"
-              title="Your Chromium browser"
+              title="Chromium Session"
               allow="clipboard-read; clipboard-write; fullscreen"
               allowFullScreen
             />
@@ -403,93 +395,108 @@ function Dashboard({ user }) {
                 <div className="workspace-status">
                   <span className={isRunning ? "status-dot is-running" : "status-dot"} />
                   {isLoading
-                    ? "Checking your workspace"
+                    ? "Checking container..."
                     : isRunning
-                      ? "Browser is ready"
+                      ? "Chromium is online"
                       : isStarting
-                        ? "Starting your browser"
-                      : workspace?.hasSavedData
-                        ? "Saved browser profile"
-                        : "No active session"}
+                        ? "Starting Chromium..."
+                        : hasSavedData
+                          ? "Stopped (Profile saved)"
+                          : "No container created"}
                 </div>
                 <h2 id="workspace-title">
                   {isRunning
-                    ? "Your browser is waiting"
+                    ? "Your browser is ready"
                     : isStarting
-                      ? "Your browser is starting"
-                    : workspace?.hasSavedData
-                      ? "Pick up where you left off"
-                      : "A browser of your own"}
+                      ? "Starting your container"
+                      : hasSavedData
+                        ? "Resume your saved session"
+                        : "Create your personal browser"}
                 </h2>
                 <p>
                   {isRunning
-                    ? "Your private Chromium session is running. Rejoin it or stop it when you are done."
+                    ? "Your Chromium container is online and responsive. Click Join to open your full-screen browser."
                     : isStarting
-                      ? "Your private Chromium session is getting ready. This can take a moment."
-                    : workspace?.hasSavedData
-                      ? "Your container is stopped, but your browser profile and files are saved."
-                      : "Start a private Chromium session. Your profile and files will be saved between visits."}
+                      ? "Starting your LinuxServer Chromium container. You will be automatically joined once it is responsive."
+                      : hasSavedData
+                        ? "Your container is stopped, but your profile, bookmarks, and downloads are safely stored in your volume."
+                        : "Launch an isolated Chromium container. Your profile and downloads will be preserved across restarts."}
                 </p>
               </div>
             </div>
 
             <div className="workspace-controls">
-              <button
-                className="submit-button workspace-primary-button"
-                type="button"
-                disabled={Boolean(busyAction) || isLoading || isStarting}
-                onClick={() =>
-                  runWorkspaceAction("start", { enter: true })
-                }
-              >
-                <span>
-                  {busyAction === "start"
-                    ? "Starting your browser..."
-                    : isStarting
-                      ? "Starting your browser..."
-                    : isRunning
-                      ? "Rejoin session"
-                      : workspace?.hasSavedData
-                        ? "Resume saved session"
-                        : "Start a session"}
-                </span>
-                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                  <path
-                    d="M4.5 10h11m0 0-4.5-4.5M15.5 10 11 14.5"
-                    stroke="currentColor"
-                    strokeWidth="1.6"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
-              {workspace?.hasSavedData && (
-                <button
-                  className="quiet-button"
-                  type="button"
-                  disabled={Boolean(busyAction)}
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        "Reset your browser profile? This permanently deletes saved browser data and files.",
-                      )
-                    ) {
-                      runWorkspaceAction("reset");
-                    }
-                  }}
-                >
-                  {busyAction === "reset" ? "Resetting..." : "Reset profile"}
-                </button>
-              )}
-              {isRunning && (
-                <button
-                  className="quiet-button stop-button"
-                  type="button"
-                  disabled={Boolean(busyAction)}
-                  onClick={() => runWorkspaceAction("stop")}
-                >
-                  {busyAction === "stop" ? "Stopping..." : "Stop session"}
-                </button>
+              {isRunning ? (
+                <>
+                  <button
+                    className="submit-button workspace-primary-button"
+                    type="button"
+                    onClick={() => setIsViewing(true)}
+                  >
+                    <span>Join browser</span>
+                    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                      <path
+                        d="M4.5 10h11m0 0-4.5-4.5M15.5 10 11 14.5"
+                        stroke="currentColor"
+                        strokeWidth="1.6"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    className="quiet-button stop-button"
+                    type="button"
+                    disabled={Boolean(busyAction)}
+                    onClick={handleStop}
+                  >
+                    {busyAction === "stop" ? "Stopping..." : "Stop container"}
+                  </button>
+                  <button
+                    className="quiet-button"
+                    type="button"
+                    disabled={Boolean(busyAction)}
+                    onClick={handleRemove}
+                  >
+                    {busyAction === "remove" ? "Removing..." : "Remove container"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    className="submit-button workspace-primary-button"
+                    type="button"
+                    disabled={Boolean(busyAction) || isLoading || isStarting}
+                    onClick={() => handleStart(true)}
+                  >
+                    <span>
+                      {isStarting
+                        ? "Starting container..."
+                        : hasSavedData
+                          ? "Start & join browser"
+                          : "Create & start browser"}
+                    </span>
+                    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                      <path
+                        d="M4.5 10h11m0 0-4.5-4.5M15.5 10 11 14.5"
+                        stroke="currentColor"
+                        strokeWidth="1.6"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                  {hasSavedData && (
+                    <button
+                      className="quiet-button"
+                      type="button"
+                      disabled={Boolean(busyAction)}
+                      onClick={handleRemove}
+                    >
+                      {busyAction === "remove" ? "Removing..." : "Remove container & data"}
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </section>
@@ -498,10 +505,10 @@ function Dashboard({ user }) {
         <section className="community-card" aria-label="Community">
           <div className="community-mark" aria-hidden="true">✳</div>
           <div>
-            <h2>A little more room to connect</h2>
-            <p>We’re saving a spot for the community features coming next.</p>
+            <h2>Dedicated, persistent browser containers</h2>
+            <p>Every account gets an isolated container with private volume storage organized by your user UUID.</p>
           </div>
-          <span className="coming-soon">COMING SOON</span>
+          <span className="coming-soon">CARBON LABS</span>
         </section>
       </div>
     </section>
@@ -546,10 +553,11 @@ export default function App() {
         if (response.status === 401) {
           return null;
         }
-        const result = await response.json();
         if (!response.ok) {
-          throw new Error(result.error || "Unable to check your session.");
+          throw new Error("Unable to reach backend server. Please verify MongoDB and the server are running.");
         }
+        const text = await response.text();
+        const result = text ? JSON.parse(text) : {};
         return result.user;
       })
       .then((authenticatedUser) => {
@@ -578,14 +586,6 @@ export default function App() {
   async function handleLogout() {
     setMessage("");
     try {
-      try {
-        await requestApi("/api/workspace/presence", {
-          method: "POST",
-          body: JSON.stringify({ active: false }),
-        });
-      } catch (error) {
-        console.error("Could not clear workspace presence before logout:", error);
-      }
       const response = await fetch("/api/auth/logout", { method: "POST" });
       if (!response.ok) {
         throw new Error("Unable to log out. Please try again.");
@@ -622,7 +622,7 @@ export default function App() {
           Preparing your workspace...
         </div>
       ) : showDashboard ? (
-        <Dashboard key={user.username} user={user} />
+        <Dashboard user={user} />
       ) : (
         <div className="main-layout">
           <WelcomePanel />
