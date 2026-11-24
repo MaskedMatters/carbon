@@ -14,7 +14,11 @@ import { DockerManager } from "./dockerManager.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
-const mongoUri = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/carbon-labs";
+const mongoUri =
+  process.env.MONGO_URI ||
+  (process.env.DOCKER_CONTAINER
+    ? "mongodb://mongo:27017/carbon-labs"
+    : "mongodb://127.0.0.1:27017/carbon-labs");
 const sessionSecret = process.env.SESSION_SECRET;
 const isProduction = process.env.NODE_ENV === "production";
 
@@ -755,3 +759,36 @@ try {
   console.error("Could not connect to MongoDB:", error);
   process.exitCode = 1;
 }
+
+let isShuttingDown = false;
+async function handleShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[Server] Received ${signal}. Saving and stopping active browser containers...`);
+
+  try {
+    await dockerManager.stopAllActiveContainers();
+  } catch (err) {
+    console.error("[Server] Error saving containers during shutdown:", err);
+  }
+
+  server.close(() => {
+    mongoose.connection
+      .close(false)
+      .then(() => {
+        console.log("[Server] Graceful shutdown complete.");
+        process.exit(0);
+      })
+      .catch(() => process.exit(0));
+  });
+
+  // Failsafe timeout after 25s
+  setTimeout(() => {
+    console.warn("[Server] Forced shutdown timeout reached.");
+    process.exit(0);
+  }, 25000);
+}
+
+process.on("SIGTERM", () => handleShutdown("SIGTERM"));
+process.on("SIGINT", () => handleShutdown("SIGINT"));
+

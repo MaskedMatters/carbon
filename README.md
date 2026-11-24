@@ -2,74 +2,107 @@
 
 > Self-hosted private Chromium desktop workspaces with persistent per-user volume storage, role-based administration, sign-up approvals, and live telemetry.
 
-Carbon Labs allows users to launch their own dedicated, web-accessible [linuxserver/chromium](https://docs.linuxserver.io/images/docker-chromium/) container directly inside their browser, equipped with Cloudflare Family DNS (`1.1.1.3`, `1.0.0.3`) and dedicated bind mount storage.
+Carbon Labs is packaged as a complete multi-container Docker Compose application comprising the **MongoDB database**, the **Express API backend**, and the **Nginx-powered React frontend**.
 
 ---
 
-## Key Features
+## Architecture Overview
 
-### 🚀 Onboarding & Super Admin Setup
-- When the database has no users, accessing the platform routes to `/onboarding`.
-- The first registered account automatically becomes the permanent **Super Admin**.
-- Super Admins are immune to deletion and role modification. Once completed, `/onboarding` is permanently locked.
-
-### 📋 Request-Based Sign Ups & Approval Workflow
-- Public registration (`/signup`) features a **"Request sign up"** button.
-- Submissions enter `pending` status and do not grant immediate access.
-- Admins receive pending requests in the dashboard with username and request timestamp, with one-click **Approve** or **Deny** controls.
-- Approved users can immediately log in; denied requests are purged.
-
-### 👥 Comprehensive Admin Suite
-- **User Management**: View all users, promote to Admin or demote to User, manually provision pre-approved accounts, and delete users (which automatically cleans up their container and disk volume).
-- **Docker & Volume Statistics**: Real-time telemetry displaying running containers (ID, name, owner, status, host port) and preserved user bind directories on disk.
-
-### 📢 Community Message Board
-- Platform-wide broadcast board accessible to all authenticated users.
-- Admins can compose and broadcast announcements to all users.
-
-### 🟢 Live Active Usage Telemetry
-- Distinguishes between containers that are merely running versus users who are **actively viewing/interacting** with their private browser.
-- Real-time heartbeat tracking surfaces an active presence count badge on the dashboard.
-
-### ⚙️ User Account Settings
-- Every user can independently update their username or change their password from the dashboard.
-
-### 🖥️ Chromium Browser Workspace
-- Direct Docker management via Node.js (`dockerode`) over `/var/run/docker.sock`.
-- Per-user persistent storage bind-mounted to `volumes/<userUUID>`.
-- Auto-join when the container becomes online and responsive.
-- Full-screen browser iframe with a thin top bar for refreshing or exiting back to the dashboard.
-- Safe lifecycle controls: **Start / Join**, **Stop** (keeps volume data), and **Remove** (deletes container and volume directory).
+```text
+               [ Host Browser ]
+                      │
+                      ▼ (Port 8000 / FRONTEND_PORT)
+             [ Frontend: Nginx ]
+             - Serves React SPA
+             - Proxies /api/ and /session/ (WebSockets)
+                      │
+                      ▼
+             [ Backend: Express API ] (Port 3001)
+             - Authentication & Session Store (MongoDB)
+             - Direct Docker socket integration (/var/run/docker.sock)
+             - Reverse proxy to user browser containers
+                      │
+       ┌──────────────┴──────────────┐
+       ▼                             ▼
+[ MongoDB Server ]          [ User Chromium Containers ]
+(Internal network)          - Created dynamically per user
+                            - Isolated on 'carbon-network'
+                            - Bind mounts host ./volumes/<userUUID>
+                            - Cloudflare DNS (1.1.1.3, 1.0.0.3)
+```
 
 ---
 
-## Getting Started
+## Quick Start (Docker Compose)
 
-### 1. Prerequisites
-- **Node.js** (v20+ or v22+)
-- **MongoDB** running locally or via Docker
-- **Docker Engine** running and accessible via `/var/run/docker.sock`
+### 1. Configure `.env`
 
-### 2. Configure Environment
 Copy `.env.example` to `.env`:
+
 ```bash
 cp .env.example .env
 ```
-Set `SESSION_SECRET` to a long secure secret (e.g. `openssl rand -hex 32`).
 
-### 3. Start MongoDB
-If using Docker:
+Generate a secure `SESSION_SECRET`:
+
 ```bash
-docker run -d --name mongo -p 27017:27017 -v mongo_data:/data/db mongo:7
+openssl rand -hex 32
 ```
 
-### 4. Run Development Stack
+Paste the value into `SESSION_SECRET=` in `.env`.
+
+> [!NOTE]
+> `MONGO_URI` is **no longer required** in `.env` because MongoDB is managed by Docker Compose on the shared internal network `carbon-network`.
+
+### 2. Launch the Stack
+
+Start all services in detached mode:
+
 ```bash
-npm run dev
+docker compose up --build -d
 ```
-Open `http://localhost:5173`:
-1. Follow the **`/onboarding`** prompt to initialize your Super Admin account.
-2. Explore your browser workspace, administrative tools, message board, and telemetry!
+
+### 3. Access the Application
+
+Open your browser to:
+
+```text
+http://localhost:8000
+```
+
+*(Or whichever port you set for `FRONTEND_PORT`)*.
+
+1. **Initial Setup**: Complete the `/onboarding` screen to create the primary **Super Admin** account.
+2. **Dashboard**: Access your private browser container, real-time message board, user management, and live Docker telemetry!
+
+---
+
+## Managing the Stack
+
+```bash
+# View combined logs
+docker compose logs -f
+
+# View logs for a specific service
+docker compose logs -f backend
+
+# Stop the application
+docker compose down
+
+# Stop the application and purge database data
+docker compose down -v
+```
+
+---
+
+## Docker Statistics Tab
+
+The Administrator **Docker Stats** tab monitors exclusively the project containers and active user browsers:
+- **`carbon-frontend`**: Web client reverse proxy
+- **`carbon-backend`**: Node.js API and container manager
+- **`carbon-mongo`**: MongoDB document database
+- **`chromium-<userUUID>`**: All active user Chromium desktops
+- **`volumes/<userUUID>`**: All persistent bind mount volumes on disk
 
 ---
 
@@ -77,10 +110,10 @@ Open `http://localhost:5173`:
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `PORT` | `3001` | Express API port |
-| `MONGO_URI` | `mongodb://127.0.0.1:27017/carbon-labs` | MongoDB connection URI |
-| `SESSION_SECRET` | *(Required)* | Secret key for signing session cookies |
-| `CHROMIUM_IMAGE` | `lscr.io/linuxserver/chromium:latest` | LinuxServer Chromium Docker image |
+| `SESSION_SECRET` | *(Required)* | Secret key used to sign session cookies |
+| `FRONTEND_PORT` | `8000` | Exposed public port for the web interface |
+| `DOCKER_SOCKET_PATH`| `/var/run/docker.sock` | Path to host Docker UNIX domain socket |
+| `HOST_VOLUMES_DIR` | `./volumes` | Absolute or relative host path for user volumes |
+| `CHROMIUM_IMAGE` | `lscr.io/linuxserver/chromium:latest` | Chromium container image |
 | `CONTAINER_DNS` | `1.1.1.3,1.0.0.3` | DNS servers assigned to user containers |
-| `VOLUMES_DIR` | `<projectRoot>/volumes` | Host directory for user UUID bind mounts |
-| `DOCKER_SOCKET_PATH`| `/var/run/docker.sock` | Path to Docker UNIX domain socket |
+| `TZ` | `UTC` | Timezone configured inside containers |

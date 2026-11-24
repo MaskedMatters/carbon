@@ -1370,7 +1370,7 @@ function Dashboard({ user, onUserUpdate }) {
                     </div>
                   </div>
                   <div className="stats-stat-box">
-                    <div className="stats-stat-label">Total User Containers</div>
+                    <div className="stats-stat-label">Total Monitored Containers</div>
                     <div className="stats-stat-value">{dockerStats.summary.totalContainers}</div>
                   </div>
                   <div className="stats-stat-box">
@@ -1381,11 +1381,11 @@ function Dashboard({ user, onUserUpdate }) {
 
                 <div className="card-kicker" style={{ marginTop: "24px", marginBottom: "8px" }}>
                   <span className="kicker-dot" />
-                  ACTIVE CONTAINERS
+                  CONTAINERS (CORE STACK & CHROMIUM DESKTOPS)
                 </div>
                 {dockerStats.containers.length === 0 ? (
                   <p style={{ fontStyle: "italic", color: "#9a9e97" }}>
-                    No Chromium containers found.
+                    No monitored containers found.
                   </p>
                 ) : (
                   <div className="data-table-wrapper" style={{ marginBottom: "28px" }}>
@@ -1393,9 +1393,10 @@ function Dashboard({ user, onUserUpdate }) {
                       <thead>
                         <tr>
                           <th>Container Name</th>
+                          <th>Service / Type</th>
                           <th>Owner</th>
                           <th>Status</th>
-                          <th>Host Port</th>
+                          <th>Ports</th>
                           <th>Created</th>
                         </tr>
                       </thead>
@@ -1405,15 +1406,22 @@ function Dashboard({ user, onUserUpdate }) {
                             <td>
                               <code>{c.name}</code>
                             </td>
+                            <td>
+                              <span
+                                className={`role-badge ${c.isCoreService ? "superadmin" : "user"}`}
+                              >
+                                {c.serviceType || (c.isCoreService ? "Core Service" : "User Browser")}
+                              </span>
+                            </td>
                             <td>{c.username}</td>
                             <td>
                               <span
-                                className={`role-badge ${c.state === "running" ? "admin" : "user"}`}
+                                className={`role-badge ${c.state === "running" ? "admin" : "pending"}`}
                               >
                                 {c.status}
                               </span>
                             </td>
-                            <td>{c.port ? `127.0.0.1:${c.port}` : "—"}</td>
+                            <td>{c.port || "—"}</td>
                             <td>{new Date(c.created).toLocaleString()}</td>
                           </tr>
                         ))}

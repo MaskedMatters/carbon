@@ -6,8 +6,14 @@ export class DockerManager {
   constructor({
     socketPath = process.env.DOCKER_SOCKET_PATH || "/var/run/docker.sock",
     image = process.env.CHROMIUM_IMAGE || "lscr.io/linuxserver/chromium:latest",
-    volumesDir = process.env.VOLUMES_DIR || path.resolve(process.cwd(), "volumes"),
+    volumesDir = process.env.VOLUMES_DIR ||
+      (process.env.DOCKER_CONTAINER ? "/app/volumes" : path.resolve(process.cwd(), "volumes")),
+    hostVolumesDir = process.env.HOST_VOLUMES_DIR ||
+      process.env.VOLUMES_DIR ||
+      path.resolve(process.cwd(), "volumes"),
     proxyHost = process.env.DOCKER_PROXY_HOST || "127.0.0.1",
+    dockerNetwork = process.env.DOCKER_NETWORK ||
+      (process.env.DOCKER_CONTAINER ? "carbon-network" : ""),
     dnsServers = process.env.CONTAINER_DNS
       ? process.env.CONTAINER_DNS.split(",").map((s) => s.trim())
       : ["1.1.1.3", "1.0.0.3"],
@@ -15,7 +21,9 @@ export class DockerManager {
     this.docker = new Docker({ socketPath: socketPath.replace(/^unix:\/\//, "") });
     this.image = image;
     this.volumesDir = volumesDir;
+    this.hostVolumesDir = hostVolumesDir;
     this.proxyHost = proxyHost;
+    this.dockerNetwork = dockerNetwork;
     this.dnsServers = dnsServers;
     this.operations = new Map();
     this.imagePulled = false;
@@ -23,6 +31,10 @@ export class DockerManager {
 
   getUserVolumeDir(userUuid) {
     return path.join(this.volumesDir, userUuid);
+  }
+
+  getUserHostVolumeDir(userUuid) {
+    return path.join(this.hostVolumesDir, userUuid);
   }
 
   getContainerName(userUuid) {
@@ -92,10 +104,17 @@ export class DockerManager {
     return bindings?.[0]?.HostPort ? Number(bindings[0].HostPort) : null;
   }
 
-  async isPortReady(port) {
-    if (!port) return false;
+  async isPortReady(userUuid, port) {
+    const targetUrl = this.dockerNetwork
+      ? `http://${this.getContainerName(userUuid)}:3000/`
+      : port
+        ? `http://${this.proxyHost}:${port}/`
+        : null;
+
+    if (!targetUrl) return false;
+
     try {
-      const res = await fetch(`http://${this.proxyHost}:${port}/`, {
+      const res = await fetch(targetUrl, {
         signal: AbortSignal.timeout(2000),
       });
       return res.status < 500;
@@ -126,7 +145,7 @@ export class DockerManager {
     }
 
     const hostPort = this.getHostPort(found.info);
-    const ready = hostPort ? await this.isPortReady(hostPort) : false;
+    const ready = await this.isPortReady(userUuid, hostPort);
 
     return {
       status: ready ? "running" : "starting",
@@ -142,7 +161,7 @@ export class DockerManager {
       const found = await this.findContainer(userUuid);
       if (found && found.info.State?.Running) {
         const port = this.getHostPort(found.info);
-        if (port && (await this.isPortReady(port))) {
+        if (await this.isPortReady(userUuid, port)) {
           return { ready: true, port };
         }
       }
@@ -155,7 +174,7 @@ export class DockerManager {
     return this.withLock(userUuid, async () => {
       await this.ensureImage();
 
-      // Ensure bind directory exists
+      // Ensure local bind directory exists
       const userVolumeDir = this.getUserVolumeDir(userUuid);
       await fs.promises.mkdir(userVolumeDir, { recursive: true });
 
@@ -172,21 +191,30 @@ export class DockerManager {
           }
         }
       } else {
+        const hostConfig = {
+          Dns: this.dnsServers,
+          Binds: [`${this.getUserHostVolumeDir(userUuid)}:/config`],
+          PortBindings: {
+            "3000/tcp": [{ HostIp: "127.0.0.1", HostPort: "" }],
+          },
+          ShmSize: 1024 * 1024 * 1024,
+          RestartPolicy: { Name: "unless-stopped" },
+        };
+
+        if (this.dockerNetwork) {
+          hostConfig.NetworkMode = this.dockerNetwork;
+        }
+
         containerInstance = await this.docker.createContainer({
           Image: this.image,
           name: this.getContainerName(userUuid),
-          Labels: { "carbon.user-uuid": userUuid },
+          Labels: {
+            "carbon.project": "carbon-labs",
+            "carbon.user-uuid": userUuid,
+          },
           Env: ["PUID=1000", "PGID=1000", `TZ=${process.env.TZ || "UTC"}`],
           ExposedPorts: { "3000/tcp": {} },
-          HostConfig: {
-            Dns: this.dnsServers,
-            Binds: [`${userVolumeDir}:/config`],
-            PortBindings: {
-              "3000/tcp": [{ HostIp: "127.0.0.1", HostPort: "" }],
-            },
-            ShmSize: 1024 * 1024 * 1024,
-            RestartPolicy: { Name: "unless-stopped" },
-          },
+          HostConfig: hostConfig,
         });
         await containerInstance.start();
       }
@@ -217,6 +245,40 @@ export class DockerManager {
         ready: false,
       };
     });
+  }
+
+  async stopAllActiveContainers() {
+    try {
+      const rawContainers = await this.docker.listContainers({ all: false });
+      const activeChromium = rawContainers.filter((c) => {
+        const rawName = (c.Names?.[0] || "").replace(/^\//, "");
+        return rawName.startsWith("chromium-") || Boolean(c.Labels?.["carbon.user-uuid"]);
+      });
+
+      if (activeChromium.length === 0) return;
+
+      console.log(
+        `[DockerManager] Gracefully saving ${activeChromium.length} active browser container(s)...`,
+      );
+
+      await Promise.allSettled(
+        activeChromium.map(async (c) => {
+          const container = this.docker.getContainer(c.Id);
+          const name = (c.Names?.[0] || "").replace(/^\//, "");
+          try {
+            await container.stop({ t: 10 });
+            console.log(`[DockerManager] Saved and stopped container: ${name}`);
+          } catch (err) {
+            if (err?.statusCode !== 304 && err?.statusCode !== 404) {
+              console.error(`[DockerManager] Error stopping ${name}:`, err);
+            }
+          }
+        }),
+      );
+      console.log("[DockerManager] All active user browser containers have been saved and stopped.");
+    } catch (err) {
+      console.error("[DockerManager] Error during shutdown container sweep:", err);
+    }
   }
 
   async remove(userUuid) {
@@ -256,6 +318,11 @@ export class DockerManager {
   async getProxyTarget(userUuid) {
     const found = await this.findContainer(userUuid);
     if (!found || !found.info.State?.Running) return null;
+
+    if (this.dockerNetwork) {
+      return `http://${this.getContainerName(userUuid)}:3000`;
+    }
+
     const port = this.getHostPort(found.info);
     if (!port) return null;
     return `http://${this.proxyHost}:${port}`;
@@ -269,24 +336,58 @@ export class DockerManager {
       console.error("[DockerManager] Error listing containers:", err);
     }
 
-    const appContainers = rawContainers
+    const targetServiceNames = new Set(["carbon-mongo", "carbon-backend", "carbon-frontend"]);
+
+    // Filter strictly to:
+    // 1) The 3 Compose containers (mongo, backend, frontend)
+    // 2) The Chromium containers created for users
+    const filteredContainers = rawContainers
       .filter((c) => {
-        const name = c.Names?.[0] || "";
-        return name.includes("chromium-") || c.Labels?.["carbon.user-uuid"];
+        const rawName = (c.Names?.[0] || "").replace(/^\//, "");
+        const isCoreService =
+          targetServiceNames.has(rawName) ||
+          ["mongo", "backend", "frontend"].includes(c.Labels?.["carbon.service"]);
+        const isChromium =
+          rawName.startsWith("chromium-") || Boolean(c.Labels?.["carbon.user-uuid"]);
+
+        return isCoreService || isChromium;
       })
       .map((c) => {
-        const userUuid =
-          c.Labels?.["carbon.user-uuid"] ||
-          (c.Names?.[0] || "").replace(/^\/chromium-/, "");
-        const portInfo = c.Ports?.find((p) => p.PrivatePort === 3000);
+        const rawName = (c.Names?.[0] || "").replace(/^\//, "");
+        const isCoreService =
+          targetServiceNames.has(rawName) ||
+          ["mongo", "backend", "frontend"].includes(c.Labels?.["carbon.service"]);
+        const userUuid = c.Labels?.["carbon.user-uuid"] || (isCoreService ? null : rawName.replace(/^chromium-/, ""));
+
+        let serviceType = "User Browser";
+        let owner = userUuid ? (usersMap[userUuid] || "Unknown User") : "System";
+
+        if (rawName.includes("mongo") || c.Labels?.["carbon.service"] === "mongo") {
+          serviceType = "Database (MongoDB)";
+          owner = "Core Service";
+        } else if (rawName.includes("backend") || c.Labels?.["carbon.service"] === "backend") {
+          serviceType = "Backend API";
+          owner = "Core Service";
+        } else if (rawName.includes("frontend") || c.Labels?.["carbon.service"] === "frontend") {
+          serviceType = "Frontend (Nginx)";
+          owner = "Core Service";
+        }
+
+        const portsDesc =
+          c.Ports?.map((p) =>
+            p.PublicPort ? `${p.PublicPort}:${p.PrivatePort}` : `${p.PrivatePort}/tcp`,
+          ).join(", ") || "—";
+
         return {
           id: c.Id.slice(0, 12),
-          name: (c.Names?.[0] || "").replace(/^\//, ""),
+          name: rawName,
+          serviceType,
+          isCoreService,
           userUuid,
-          username: usersMap[userUuid] || "Unknown User",
+          username: owner,
           state: c.State,
           status: c.Status,
-          port: portInfo?.PublicPort || null,
+          port: portsDesc,
           created: new Date(c.Created * 1000).toISOString(),
         };
       });
@@ -314,14 +415,13 @@ export class DockerManager {
     }
 
     return {
-      containers: appContainers,
+      containers: filteredContainers,
       volumes,
       summary: {
-        totalContainers: appContainers.length,
-        runningContainers: appContainers.filter((c) => c.state === "running").length,
+        totalContainers: filteredContainers.length,
+        runningContainers: filteredContainers.filter((c) => c.state === "running").length,
         totalVolumes: volumes.length,
       },
     };
   }
 }
-
