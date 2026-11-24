@@ -95,24 +95,6 @@ docker compose down -v
 
 ---
 
-## Continuous Integration & Container Registry (GHCR)
-
-A GitHub Actions workflow (`.github/workflows/publish.yml`) automatically builds and publishes the Docker images on every release or push to `main`:
-
-- **Backend Image**: `ghcr.io/<owner>/<repo>/backend:latest`
-- **Frontend Image**: `ghcr.io/<owner>/<repo>/frontend:latest`
-
-The images are automatically connected to the GitHub repository using the standard OpenContainer specification label (`org.opencontainers.image.source=https://github.com/<owner>/<repo>`), making them visible under the repository's **Packages** section.
-
-To run using prebuilt images without compiling locally:
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
----
-
 ## Docker Statistics Tab
 
 The Administrator **Docker Stats** tab monitors exclusively the project containers and active user browsers:
