@@ -553,12 +553,8 @@ h1 {
 
 .active-users-icon {
   display: flex;
-  width: 33px;
-  height: 33px;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  background: #edf2eb;
 }
 
 .active-users-icon span,
@@ -567,7 +563,7 @@ h1 {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #91aa88;
+  background: var(--green);
 }
 
 .active-users > div {
@@ -649,8 +645,7 @@ h1 {
 }
 
 .status-dot.is-running {
-  background: #79a781;
-  box-shadow: 0 0 0 3px rgba(121, 167, 129, 0.13);
+  background: var(--green);
 }
 
 .workspace-card h2,
@@ -750,7 +745,8 @@ h1 {
 .connection-indicator {
   width: 6px;
   height: 6px;
-  box-shadow: 0 0 0 3px rgba(121, 167, 129, 0.13);
+  border-radius: 50%;
+  background: var(--green);
 }
 
 .session-actions {
@@ -1239,4 +1235,325 @@ h1 {
     width: 100%;
     padding: 0;
   }
+}
+
+/* --- Extended UI Components for Admin, Tabs, Message Board, Settings --- */
+
+.dashboard-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid rgba(231, 230, 222, 0.9);
+  padding-bottom: 12px;
+}
+
+.tab-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.tab-button:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.tab-button.is-active {
+  background: #fff;
+  border-color: rgba(231, 230, 222, 0.9);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(54, 60, 53, 0.04);
+}
+
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: var(--coral);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.role-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.role-badge.superadmin {
+  background: #fdf3df;
+  color: #a06b00;
+  border: 1px solid #ebd29f;
+}
+
+.role-badge.admin {
+  background: #edf5ed;
+  color: var(--green);
+  border: 1px solid #c9dec9;
+}
+
+.role-badge.user {
+  background: #f0f1ee;
+  color: var(--muted);
+  border: 1px solid #dedfd7;
+}
+
+.role-badge.pending {
+  background: #fdf0eb;
+  color: #b35639;
+  border: 1px solid #eccdc4;
+}
+
+.panel-card {
+  width: 100%;
+  padding: 32px 36px;
+  border: 1px solid rgba(231, 230, 222, 0.9);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow:
+    0 18px 48px rgba(54, 60, 53, 0.045),
+    0 2px 6px rgba(54, 60, 53, 0.025);
+  margin-bottom: 24px;
+}
+
+.panel-card h2 {
+  margin: 10px 0 6px;
+  font-family: "Playfair Display", Georgia, serif;
+  font-size: 24px;
+  font-weight: 500;
+}
+
+.panel-card p {
+  color: #818680;
+  font-size: 12px;
+  margin: 0 0 20px;
+  line-height: 1.6;
+}
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 24px;
+}
+
+.data-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  margin-top: 16px;
+  border: 1px solid #ecece7;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  text-align: left;
+}
+
+.data-table th {
+  padding: 12px 14px;
+  background: #fbfaf7;
+  color: #858983;
+  font-weight: 600;
+  border-bottom: 1px solid #ecece7;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.data-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #f2f2ed;
+  color: var(--ink);
+}
+
+.data-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.data-table tr:hover td {
+  background: #fafaf6;
+}
+
+.actions-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-small {
+  padding: 5px 10px;
+  border: 1px solid #dcded5;
+  border-radius: 4px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.btn-small:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.btn-small.danger {
+  border-color: #eed5ce;
+  color: #b54932;
+}
+
+.btn-small.danger:hover {
+  background: #b54932;
+  color: #fff;
+  border-color: #b54932;
+}
+
+.btn-small.success {
+  background: #38745d;
+  color: #fff;
+  border-color: #38745d;
+}
+
+.btn-small.success:hover {
+  background: #2a5a47;
+}
+
+.message-item {
+  padding: 18px 20px;
+  border: 1px solid #e8e9e2;
+  border-radius: 6px;
+  background: #fff;
+  margin-bottom: 14px;
+}
+
+.message-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.message-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.message-meta {
+  color: #90958e;
+  font-size: 10px;
+}
+
+.message-body {
+  color: #555b57;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.stats-card-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stats-stat-box {
+  padding: 20px;
+  border: 1px solid #e7e6de;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.stats-stat-label {
+  color: #888d86;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.stats-stat-value {
+  margin-top: 6px;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.form-row {
+  margin-bottom: 16px;
+}
+
+.form-row label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #4c534e;
+  margin-bottom: 6px;
+}
+
+.form-row input,
+.form-row textarea,
+.form-row select {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid #e2e4dc;
+  border-radius: 4px;
+  font-size: 12px;
+  background: #fff;
+  color: var(--ink);
+  outline: none;
+}
+
+.form-row textarea {
+  min-height: 80px;
+  resize: vertical;
+}
+
+.form-row input:focus,
+.form-row textarea:focus,
+.form-row select:focus {
+  border-color: #83a58d;
+  box-shadow: 0 0 0 3px rgba(87, 133, 100, 0.11);
+}
+
+.success-banner {
+  padding: 14px 18px;
+  border: 1px solid #c9dec9;
+  border-radius: 6px;
+  background: #edf5ed;
+  color: #2f654f;
+  font-size: 11px;
+  margin-bottom: 18px;
+  line-height: 1.5;
+}
+
+.info-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: #6a716c;
 }

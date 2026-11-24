@@ -260,5 +260,68 @@ export class DockerManager {
     if (!port) return null;
     return `http://${this.proxyHost}:${port}`;
   }
+
+  async getDockerStats(usersMap = {}) {
+    let rawContainers = [];
+    try {
+      rawContainers = await this.docker.listContainers({ all: true });
+    } catch (err) {
+      console.error("[DockerManager] Error listing containers:", err);
+    }
+
+    const appContainers = rawContainers
+      .filter((c) => {
+        const name = c.Names?.[0] || "";
+        return name.includes("chromium-") || c.Labels?.["carbon.user-uuid"];
+      })
+      .map((c) => {
+        const userUuid =
+          c.Labels?.["carbon.user-uuid"] ||
+          (c.Names?.[0] || "").replace(/^\/chromium-/, "");
+        const portInfo = c.Ports?.find((p) => p.PrivatePort === 3000);
+        return {
+          id: c.Id.slice(0, 12),
+          name: (c.Names?.[0] || "").replace(/^\//, ""),
+          userUuid,
+          username: usersMap[userUuid] || "Unknown User",
+          state: c.State,
+          status: c.Status,
+          port: portInfo?.PublicPort || null,
+          created: new Date(c.Created * 1000).toISOString(),
+        };
+      });
+
+    const volumes = [];
+    if (fs.existsSync(this.volumesDir)) {
+      try {
+        const entries = await fs.promises.readdir(this.volumesDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const userUuid = entry.name;
+            const fullPath = path.join(this.volumesDir, userUuid);
+            const stats = await fs.promises.stat(fullPath);
+            volumes.push({
+              userUuid,
+              username: usersMap[userUuid] || "Unknown / Deleted User",
+              createdAt: stats.birthtime.toISOString(),
+              updatedAt: stats.mtime.toISOString(),
+            });
+          }
+        }
+      } catch (err) {
+        console.error("[DockerManager] Error reading volumes directory:", err);
+      }
+    }
+
+    return {
+      containers: appContainers,
+      volumes,
+      summary: {
+        totalContainers: appContainers.length,
+        runningContainers: appContainers.filter((c) => c.state === "running").length,
+        totalVolumes: volumes.length,
+      },
+    };
+  }
 }
 
