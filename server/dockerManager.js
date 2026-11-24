@@ -27,6 +27,9 @@ export class DockerManager {
     this.dnsServers = dnsServers;
     this.operations = new Map();
     this.imagePulled = false;
+    this.imageUpdateAvailable = false;
+    this.lastImageCheck = 0;
+    this.isPullingImage = false;
   }
 
   getUserVolumeDir(userUuid) {
@@ -59,27 +62,96 @@ export class DockerManager {
     }
   }
 
-  async ensureImage() {
-    if (this.imagePulled) return;
-    try {
-      await this.docker.getImage(this.image).inspect();
-      this.imagePulled = true;
+  async pullImage() {
+    if (this.isPullingImage) {
+      while (this.isPullingImage) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
       return;
-    } catch (err) {
-      if (err?.statusCode !== 404) throw err;
     }
 
-    console.log(`[DockerManager] Pulling image ${this.image}...`);
-    await new Promise((resolve, reject) => {
-      this.docker.pull(this.image, (pullErr, stream) => {
-        if (pullErr) return reject(pullErr);
-        this.docker.modem.followProgress(stream, (progressErr) =>
-          progressErr ? reject(progressErr) : resolve(),
+    this.isPullingImage = true;
+    console.log(`[DockerManager] Pulling latest Chromium image: ${this.image}...`);
+    try {
+      await new Promise((resolve, reject) => {
+        this.docker.pull(this.image, (pullErr, stream) => {
+          if (pullErr) return reject(pullErr);
+          this.docker.modem.followProgress(stream, (progressErr) =>
+            progressErr ? reject(progressErr) : resolve(),
+          );
+        });
+      });
+      this.imagePulled = true;
+      this.imageUpdateAvailable = false;
+      this.lastImageCheck = Date.now();
+      console.log(`[DockerManager] Successfully updated Chromium image: ${this.image}`);
+    } finally {
+      this.isPullingImage = false;
+    }
+  }
+
+  async checkForImageUpdate(force = true) {
+    const now = Date.now();
+    if (!force && this.lastImageCheck && now - this.lastImageCheck < 60 * 1000) {
+      return { updateAvailable: this.imageUpdateAvailable };
+    }
+    this.lastImageCheck = now;
+
+    try {
+      let localInspect;
+      try {
+        localInspect = await this.docker.getImage(this.image).inspect();
+        this.imagePulled = true;
+      } catch (err) {
+        if (err?.statusCode === 404) {
+          this.imagePulled = false;
+          this.imageUpdateAvailable = true;
+          return { updateAvailable: true, reason: "Local image not present" };
+        }
+        throw err;
+      }
+
+      // Query registry distribution descriptor via Docker daemon
+      const distData = await new Promise((resolve, reject) => {
+        this.docker.modem.dial(
+          {
+            path: `/distribution/${this.image}/json`,
+            method: "GET",
+            statusCodes: { 200: true },
+          },
+          (err, data) => (err ? reject(err) : resolve(data)),
         );
       });
-    });
-    this.imagePulled = true;
-    console.log(`[DockerManager] Image pulled successfully.`);
+
+      const remoteDigest = distData?.Descriptor?.digest;
+      if (!remoteDigest) {
+        return { updateAvailable: this.imageUpdateAvailable };
+      }
+
+      const localRepoDigests = localInspect.RepoDigests || [];
+      const isUpToDate = localRepoDigests.some((rd) => rd.includes(remoteDigest));
+
+      this.imageUpdateAvailable = !isUpToDate;
+
+      return {
+        updateAvailable: this.imageUpdateAvailable,
+        remoteDigest,
+      };
+    } catch (err) {
+      console.warn(`[DockerManager] Could not verify remote image status: ${err.message}`);
+      return { updateAvailable: !this.imagePulled, error: err.message };
+    }
+  }
+
+  async ensureImage() {
+    console.log(`[DockerManager] Checking for Chromium image updates before launching container...`);
+    const updateCheck = await this.checkForImageUpdate(true);
+    if (updateCheck?.updateAvailable || !this.imagePulled) {
+      console.log(`[DockerManager] Newer Chromium image found (or local image missing). Pulling before creating container...`);
+      await this.pullImage();
+    } else {
+      console.log(`[DockerManager] Chromium image is up to date.`);
+    }
   }
 
   async findContainer(userUuid) {
@@ -178,46 +250,55 @@ export class DockerManager {
       const userVolumeDir = this.getUserVolumeDir(userUuid);
       await fs.promises.mkdir(userVolumeDir, { recursive: true });
 
-      const found = await this.findContainer(userUuid);
-      let containerInstance;
+      let found = await this.findContainer(userUuid);
 
       if (found) {
-        containerInstance = found.container;
         if (!found.info.State?.Running) {
+          // Stale or stopped container: delete so it is created fresh with the latest image
           try {
-            await containerInstance.start();
+            await found.container.remove({ force: true });
           } catch (err) {
-            if (err?.statusCode !== 304) throw err;
+            if (err?.statusCode !== 404) throw err;
           }
+          found = null;
+        } else {
+          // Already running!
+          const { port } = await this.waitForReady(userUuid);
+          return {
+            status: "running",
+            hasSavedData: true,
+            ready: true,
+            port,
+          };
         }
-      } else {
-        const hostConfig = {
-          Dns: this.dnsServers,
-          Binds: [`${this.getUserHostVolumeDir(userUuid)}:/config`],
-          PortBindings: {
-            "3000/tcp": [{ HostIp: "127.0.0.1", HostPort: "" }],
-          },
-          ShmSize: 1024 * 1024 * 1024,
-          RestartPolicy: { Name: "unless-stopped" },
-        };
-
-        if (this.dockerNetwork) {
-          hostConfig.NetworkMode = this.dockerNetwork;
-        }
-
-        containerInstance = await this.docker.createContainer({
-          Image: this.image,
-          name: this.getContainerName(userUuid),
-          Labels: {
-            "carbon.project": "carbon-labs",
-            "carbon.user-uuid": userUuid,
-          },
-          Env: ["PUID=1000", "PGID=1000", `TZ=${process.env.TZ || "UTC"}`],
-          ExposedPorts: { "3000/tcp": {} },
-          HostConfig: hostConfig,
-        });
-        await containerInstance.start();
       }
+
+      const hostConfig = {
+        Dns: this.dnsServers,
+        Binds: [`${this.getUserHostVolumeDir(userUuid)}:/config`],
+        PortBindings: {
+          "3000/tcp": [{ HostIp: "127.0.0.1", HostPort: "" }],
+        },
+        ShmSize: 1024 * 1024 * 1024,
+        RestartPolicy: { Name: "no" },
+      };
+
+      if (this.dockerNetwork) {
+        hostConfig.NetworkMode = this.dockerNetwork;
+      }
+
+      const containerInstance = await this.docker.createContainer({
+        Image: this.image,
+        name: this.getContainerName(userUuid),
+        Labels: {
+          "carbon.project": "carbon-labs",
+          "carbon.user-uuid": userUuid,
+        },
+        Env: ["PUID=1000", "PGID=1000", `TZ=${process.env.TZ || "UTC"}`],
+        ExposedPorts: { "3000/tcp": {} },
+        HostConfig: hostConfig,
+      });
+      await containerInstance.start();
 
       const { port } = await this.waitForReady(userUuid);
       return {
@@ -232,11 +313,18 @@ export class DockerManager {
   async stop(userUuid) {
     return this.withLock(userUuid, async () => {
       const found = await this.findContainer(userUuid);
-      if (found && found.info.State?.Running) {
+      if (found) {
+        if (found.info.State?.Running) {
+          try {
+            await found.container.stop({ t: 10 });
+          } catch (err) {
+            if (err?.statusCode !== 304 && err?.statusCode !== 404) throw err;
+          }
+        }
         try {
-          await found.container.stop({ t: 10 });
+          await found.container.remove({ force: true });
         } catch (err) {
-          if (err?.statusCode !== 304 && err?.statusCode !== 404) throw err;
+          if (err?.statusCode !== 404) throw err;
         }
       }
       return {
@@ -249,7 +337,7 @@ export class DockerManager {
 
   async stopAllActiveContainers() {
     try {
-      const rawContainers = await this.docker.listContainers({ all: false });
+      const rawContainers = await this.docker.listContainers({ all: true });
       const activeChromium = rawContainers.filter((c) => {
         const rawName = (c.Names?.[0] || "").replace(/^\//, "");
         return rawName.startsWith("chromium-") || Boolean(c.Labels?.["carbon.user-uuid"]);
@@ -258,7 +346,7 @@ export class DockerManager {
       if (activeChromium.length === 0) return;
 
       console.log(
-        `[DockerManager] Gracefully saving ${activeChromium.length} active browser container(s)...`,
+        `[DockerManager] Gracefully saving and deleting ${activeChromium.length} browser container(s)...`,
       );
 
       await Promise.allSettled(
@@ -266,16 +354,19 @@ export class DockerManager {
           const container = this.docker.getContainer(c.Id);
           const name = (c.Names?.[0] || "").replace(/^\//, "");
           try {
-            await container.stop({ t: 10 });
-            console.log(`[DockerManager] Saved and stopped container: ${name}`);
+            if (c.State === "running") {
+              await container.stop({ t: 10 });
+            }
+            await container.remove({ force: true });
+            console.log(`[DockerManager] Saved and removed container: ${name}`);
           } catch (err) {
             if (err?.statusCode !== 304 && err?.statusCode !== 404) {
-              console.error(`[DockerManager] Error stopping ${name}:`, err);
+              console.error(`[DockerManager] Error stopping/removing ${name}:`, err);
             }
           }
         }),
       );
-      console.log("[DockerManager] All active user browser containers have been saved and stopped.");
+      console.log("[DockerManager] All active user browser containers have been saved and removed.");
     } catch (err) {
       console.error("[DockerManager] Error during shutdown container sweep:", err);
     }
@@ -421,6 +512,11 @@ export class DockerManager {
         totalContainers: filteredContainers.length,
         runningContainers: filteredContainers.filter((c) => c.state === "running").length,
         totalVolumes: volumes.length,
+      },
+      imageInfo: {
+        image: this.image,
+        updateAvailable: this.imageUpdateAvailable,
+        lastChecked: this.lastImageCheck ? new Date(this.lastImageCheck).toISOString() : null,
       },
     };
   }

@@ -600,6 +600,16 @@ app.get(
   }),
 );
 
+app.post(
+  "/api/admin/docker/check-image",
+  requireAuth,
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const result = await dockerManager.checkForImageUpdate(true);
+    return res.json({ ok: true, result });
+  }),
+);
+
 // Container lifecycle endpoints
 app.get(
   "/api/container",

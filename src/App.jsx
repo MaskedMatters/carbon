@@ -289,6 +289,7 @@ function Dashboard({ user, onUserUpdate }) {
   const [pendingRequests, setPendingRequests] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
   const [dockerStats, setDockerStats] = useState(null);
+  const [isCheckingImage, setIsCheckingImage] = useState(false);
   const [manualUsername, setManualUsername] = useState("");
   const [manualPassword, setManualPassword] = useState("");
   const [manualRole, setManualRole] = useState("user");
@@ -381,6 +382,25 @@ function Dashboard({ user, onUserUpdate }) {
       setDockerStats(data);
     } catch {
       // docker error
+    }
+  };
+
+  const handleCheckImageUpdate = async () => {
+    setIsCheckingImage(true);
+    setErrorMessage("");
+    setSuccessMessage("");
+    try {
+      const data = await requestApi("/api/admin/docker/check-image", { method: "POST" });
+      await loadDockerStats();
+      if (data.result?.updateAvailable) {
+        setSuccessMessage("A newer Chromium image is available in the registry. It will be pulled on the next container launch.");
+      } else {
+        setSuccessMessage("Chromium image is already up to date.");
+      }
+    } catch (err) {
+      setErrorMessage(err.message || "Failed to check for image updates.");
+    } finally {
+      setIsCheckingImage(false);
     }
   };
 
@@ -1378,6 +1398,51 @@ function Dashboard({ user, onUserUpdate }) {
                     <div className="stats-stat-value">{dockerStats.summary.totalVolumes}</div>
                   </div>
                 </div>
+
+                {dockerStats.imageInfo && (
+                  <div
+                    style={{
+                      marginTop: "16px",
+                      padding: "14px 18px",
+                      borderRadius: "8px",
+                      background: "var(--surface)",
+                      border: "1px solid var(--border)",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: "12px",
+                    }}
+                  >
+                    <div>
+                      <div className="stats-stat-label">Chromium Base Image</div>
+                      <div style={{ fontFamily: "monospace", fontSize: "13px", marginTop: "4px" }}>
+                        {dockerStats.imageInfo.image}
+                      </div>
+                      <div style={{ marginTop: "8px", display: "flex", alignItems: "center", gap: "10px" }}>
+                        {dockerStats.imageInfo.updateAvailable ? (
+                          <span className="role-badge pending">Update available — will pull on next container start</span>
+                        ) : (
+                          <span className="role-badge admin">Image is up to date</span>
+                        )}
+                        {dockerStats.imageInfo.lastChecked && (
+                          <span style={{ fontSize: "11px", color: "var(--muted)" }}>
+                            Checked: {new Date(dockerStats.imageInfo.lastChecked).toLocaleTimeString()}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      style={{ padding: "6px 14px", fontSize: "12px" }}
+                      onClick={handleCheckImageUpdate}
+                      disabled={isCheckingImage}
+                    >
+                      {isCheckingImage ? "Checking Registry..." : "Check for Image Updates"}
+                    </button>
+                  </div>
+                )}
 
                 <div className="card-kicker" style={{ marginTop: "24px", marginBottom: "8px" }}>
                   <span className="kicker-dot" />
